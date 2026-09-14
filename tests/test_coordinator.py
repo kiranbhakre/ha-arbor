@@ -25,6 +25,7 @@ from custom_components.arbor.const import (
     DATA_KPIS,
     DATA_SCHOOL_MESSAGES,
     EVENT_SCHOOL_MESSAGE,
+    MESSAGE_DETAIL_LIMIT,
 )
 from custom_components.arbor.coordinator import ArborDataUpdateCoordinator
 
@@ -326,3 +327,88 @@ async def test_messages_over_the_cap_are_announced_on_later_polls(
     await _poll(coordinator)
     await hass.async_block_till_done()
     assert len(events) == 7
+
+
+def _detail(message_id: str) -> dict[str, str]:
+    return {"id": message_id, "sent_by": "Office", "body": f"Full body {message_id}"}
+
+
+async def test_latest_messages_carry_full_body_from_first_poll(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    config_entry.add_to_hass(hass)
+    client = _mock_client(
+        get_school_messages=AsyncMock(
+            return_value=[_message(str(i)) for i in range(6, 0, -1)]
+        ),
+        get_school_message=AsyncMock(side_effect=_detail),
+    )
+    coordinator = ArborDataUpdateCoordinator(hass, client, config_entry)
+
+    data = await _poll(coordinator)
+    messages = data[DATA_ACCOUNT][DATA_SCHOOL_MESSAGES]
+
+    assert [m.get("body") for m in messages[:MESSAGE_DETAIL_LIMIT]] == [
+        f"Full body {i}" for i in range(6, 6 - MESSAGE_DETAIL_LIMIT, -1)
+    ]
+    assert messages[0]["sent_by"] == "Office"
+    assert messages[0]["preview"] == "Hi Parents..."
+    assert all("body" not in m for m in messages[MESSAGE_DETAIL_LIMIT:])
+    assert client.get_school_message.await_count == MESSAGE_DETAIL_LIMIT
+
+
+async def test_message_details_are_cached_between_polls(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    config_entry.add_to_hass(hass)
+    client = _mock_client(
+        get_school_messages=AsyncMock(return_value=[_message("2"), _message("1")]),
+        get_school_message=AsyncMock(side_effect=_detail),
+    )
+    coordinator = ArborDataUpdateCoordinator(hass, client, config_entry)
+
+    await _poll(coordinator)
+    data = await _poll(coordinator)
+
+    assert client.get_school_message.await_count == 2
+    assert data[DATA_ACCOUNT][DATA_SCHOOL_MESSAGES][0]["body"] == "Full body 2"
+
+
+async def test_failed_message_detail_is_retried_next_poll(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    config_entry.add_to_hass(hass)
+    client = _mock_client(
+        get_school_messages=AsyncMock(return_value=[_message("1")]),
+        get_school_message=AsyncMock(side_effect=ArborApiError("500")),
+    )
+    coordinator = ArborDataUpdateCoordinator(hass, client, config_entry)
+
+    data = await _poll(coordinator)
+    assert "body" not in data[DATA_ACCOUNT][DATA_SCHOOL_MESSAGES][0]
+
+    client.get_school_message = AsyncMock(side_effect=_detail)
+    data = await _poll(coordinator)
+    assert data[DATA_ACCOUNT][DATA_SCHOOL_MESSAGES][0]["body"] == "Full body 1"
+
+
+async def test_new_message_detail_is_fetched_once_for_event_and_sensor(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    config_entry.add_to_hass(hass)
+    events = async_capture_events(hass, EVENT_SCHOOL_MESSAGE)
+    client = _mock_client(
+        get_school_messages=AsyncMock(return_value=[_message("1")]),
+        get_school_message=AsyncMock(side_effect=_detail),
+    )
+    coordinator = ArborDataUpdateCoordinator(hass, client, config_entry)
+    await _poll(coordinator)
+
+    client.get_school_messages = AsyncMock(return_value=[_message("2"), _message("1")])
+    data = await _poll(coordinator)
+    await hass.async_block_till_done()
+
+    assert [e.data["body"] for e in events] == ["Full body 2"]
+    assert data[DATA_ACCOUNT][DATA_SCHOOL_MESSAGES][0]["body"] == "Full body 2"
+    # message 1 on the first poll, message 2 once on the second
+    assert client.get_school_message.await_count == 2

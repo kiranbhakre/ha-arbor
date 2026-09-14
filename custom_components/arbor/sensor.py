@@ -503,6 +503,8 @@ class ArborSchoolMessagesSensor(
         return {
             "subject": latest.get("subject"),
             "preview": latest.get("preview"),
+            "body": latest.get("body"),
+            "sent_by": latest.get("sent_by"),
             "message_id": latest.get("id"),
             "recent_messages": messages[:RECENT_MESSAGES_LIMIT],
             "total": len(messages),

@@ -38,6 +38,7 @@ from .const import (
     DOMAIN,
     EVENT_SCHOOL_MESSAGE,
     MAX_ANNOUNCED_MESSAGES,
+    MESSAGE_DETAIL_LIMIT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,6 +79,8 @@ class ArborDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # None until the first successful fetch, so existing messages are not
         # announced as new when HA starts.
         self._seen_message_ids: set[str] | None = None
+        # Full body/sender per message ID, so each detail page is fetched once
+        self._message_details: dict[str, dict[str, str]] = {}
         self._requests_attempted = 0
         self._requests_failed = 0
 
@@ -196,7 +199,41 @@ class ArborDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return {DATA_SCHOOL_MESSAGES: previous or []}
 
         await self._announce_new_messages(messages)
-        return {DATA_SCHOOL_MESSAGES: messages}
+        return {DATA_SCHOOL_MESSAGES: await self._with_details(messages)}
+
+    async def _message_detail(self, message_id: str) -> dict[str, str]:
+        """Return a message's detail page, fetching it only on a cache miss.
+
+        Failed fetches are not cached, so they are retried on the next poll.
+        """
+        if message_id in self._message_details:
+            return self._message_details[message_id]
+        detail = await self._fetch_or_fallback(
+            f"school message {message_id}",
+            partial(self.client.get_school_message, message_id),
+            {},
+        )
+        if detail:
+            self._message_details[message_id] = detail
+        return detail
+
+    async def _with_details(
+        self, messages: list[dict[str, str]]
+    ) -> list[dict[str, str]]:
+        """Attach full body and sender to the newest messages."""
+        enriched = []
+        for index, message in enumerate(messages):
+            if index < MESSAGE_DETAIL_LIMIT:
+                detail = await self._message_detail(message["id"])
+                message = _merge_detail(message, detail)
+            enriched.append(message)
+        current_ids = {message["id"] for message in messages}
+        self._message_details = {
+            mid: detail
+            for mid, detail in self._message_details.items()
+            if mid in current_ids
+        }
+        return enriched
 
     async def _fetch_or_fallback(
         self, what: str, request: Callable[[], Awaitable[Any]], fallback: Any
@@ -234,13 +271,7 @@ class ArborDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         for message in batch:
-            detail = await self._fetch_or_fallback(
-                f"school message {message['id']}",
-                partial(self.client.get_school_message, message["id"]),
-                {},
-            )
-            # Detail fields win, but keep list fields the detail page lacks.
-            merged = {**message, **{k: v for k, v in detail.items() if v}}
+            merged = _merge_detail(message, await self._message_detail(message["id"]))
             self.hass.bus.async_fire(
                 EVENT_SCHOOL_MESSAGE,
                 {
@@ -304,3 +335,8 @@ class ArborDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
+
+
+def _merge_detail(message: dict[str, str], detail: dict[str, str]) -> dict[str, str]:
+    """Overlay detail fields, keeping list fields the detail page lacks."""
+    return {**message, **{k: v for k, v in detail.items() if v}}

@@ -55,3 +55,5 @@ EVENT_SCHOOL_MESSAGE = "arbor_school_message"
 MAX_ANNOUNCED_MESSAGES = 5
 # Messages exposed in sensor attributes
 RECENT_MESSAGES_LIMIT = 10
+# Newest messages whose full body and sender are fetched and cached
+MESSAGE_DETAIL_LIMIT = 3
