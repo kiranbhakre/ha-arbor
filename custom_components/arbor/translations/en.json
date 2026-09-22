@@ -16,6 +16,14 @@
           "username": "Email Address",
           "password": "Password"
         }
+      },
+      "reconfigure": {
+        "title": "Update Arbor credentials",
+        "description": "Enter the current Arbor parent portal credentials for {school}.",
+        "data": {
+          "username": "Email Address",
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -25,9 +33,10 @@
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This school is already configured.",
+      "already_configured": "This school is already configured. Its saved credentials have been updated.",
       "reauth_successful": "Re-authentication was successful.",
-      "wrong_account": "These credentials belong to a different school than the one being re-authenticated."
+      "wrong_account": "These credentials belong to a different school than the one being re-authenticated.",
+      "reconfigure_successful": "The credentials were updated."
     }
   },
   "options": {
