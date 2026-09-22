@@ -110,9 +110,20 @@ class ArborConfigFlow(ConfigFlow, domain=DOMAIN):
                     client, students[0]["student_id"]
                 )
 
-                # Set unique ID to prevent duplicate entries
+                # One entry per school. Re-adding a school that is already
+                # set up refreshes its credentials and reloads it, so a bad
+                # password can be fixed without deleting the integration.
                 await self.async_set_unique_id(f"arbor_{auth_result['school_domain']}")
-                self._abort_if_unique_id_configured()
+                self._abort_if_unique_id_configured(
+                    updates={
+                        CONF_USERNAME: user_input[CONF_USERNAME],
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_REFRESH_TOKEN: auth_result["refresh_token"],
+                        CONF_ACCESS_TOKEN: auth_result["access_token"],
+                        CONF_TOKEN_EXPIRY: auth_result["token_expiry"],
+                    },
+                    reload_on_update=True,
+                )
 
                 return self.async_create_entry(
                     title=auth_result.get("school_name", "Arbor School"),
@@ -154,9 +165,32 @@ class ArborConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Collect new credentials and update the existing entry."""
+        """Collect new credentials after Home Assistant rejected the old ones."""
+        return await self._async_update_credentials(
+            "reauth_confirm", self._get_reauth_entry(), user_input
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user re-enter credentials at any time, from the entry menu.
+
+        Reauth only appears once Home Assistant has decided the credentials
+        are bad. Reconfigure is always available, so a password change can be
+        applied before the integration starts failing.
+        """
+        return await self._async_update_credentials(
+            "reconfigure", self._get_reconfigure_entry(), user_input
+        )
+
+    async def _async_update_credentials(
+        self,
+        step_id: str,
+        entry: ConfigEntry,
+        user_input: dict[str, Any] | None,
+    ) -> ConfigFlowResult:
+        """Re-authenticate and write the new credentials to an existing entry."""
         errors: dict[str, str] = {}
-        reauth_entry = self._get_reauth_entry()
 
         if user_input is not None and (
             login := await self._async_login(user_input, errors)
@@ -166,7 +200,7 @@ class ArborConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_mismatch(reason="wrong_account")
 
             return self.async_update_reload_and_abort(
-                reauth_entry,
+                entry,
                 data_updates={
                     CONF_USERNAME: user_input[CONF_USERNAME],
                     CONF_PASSWORD: user_input[CONF_PASSWORD],
@@ -177,12 +211,12 @@ class ArborConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         return self.async_show_form(
-            step_id="reauth_confirm",
+            step_id=step_id,
             data_schema=self.add_suggested_values_to_schema(
                 STEP_USER_DATA_SCHEMA,
-                {CONF_USERNAME: reauth_entry.data.get(CONF_USERNAME)},
+                {CONF_USERNAME: entry.data.get(CONF_USERNAME)},
             ),
-            description_placeholders={"school": reauth_entry.title},
+            description_placeholders={"school": entry.title},
             errors=errors,
         )
 
